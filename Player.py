@@ -1,9 +1,8 @@
 import streamlit as st
 import json
-import pandas as pd
 
 # --- 設定 ---
-# 読み込むJSONファイル名（手順①で保存したファイル名と同じにする）
+# 読み込むJSONファイル名（GitHubのファイル名と完全に一致させること）
 DATA_FILE = "diagnosis.json"
 
 st.set_page_config(page_title="性格診断", layout="centered")
@@ -52,130 +51,161 @@ st.markdown(f'<div class="main-title">{data.get("theme", "性格診断")}</div>'
 # セッション状態の初期化
 if "answers" not in st.session_state:
     st.session_state.answers = {}
-
-scores = [0] * len(data["axes"])
-max_scores = [0] * len(data["axes"])
+if "show_result" not in st.session_state:
+    st.session_state.show_result = False
 
 total_q = len(data["questions"])
 current_answered = len(st.session_state.answers)
 
-st.progress(min(current_answered / total_q, 1.0))
-st.caption(f"回答状況: {current_answered} / {total_q} 問")
+# --- まだ結果表示モードでない場合：質問を表示 ---
+if not st.session_state.show_result:
+    st.progress(min(current_answered / total_q, 1.0))
+    st.caption(f"回答状況: {current_answered} / {total_q} 問")
 
-# --- 質問ループ ---
-for i, q in enumerate(data["questions"]):
-    with st.container():
-        st.markdown(f"""
-        <div class="question-container">
-            <div class="q-text-style">Q{i+1}. {q["q"]}</div>
-        """, unsafe_allow_html=True)
-        
-        # A/Bロジック (保存された設定に従う)
-        if q.get("swap_options", False):
-            text_top = q['option_b'] # 右
-            text_bottom = q['option_a'] # 左
-            val_top_score = 1 
-        else:
-            text_top = q['option_a'] # 左
-            text_bottom = q['option_b'] # 右
-            val_top_score = -1
+    # 質問ループ
+    for i, q in enumerate(data["questions"]):
+        with st.container():
+            st.markdown(f"""
+            <div class="question-container">
+                <div class="q-text-style">Q{i+1}. {q["q"]}</div>
+            """, unsafe_allow_html=True)
+            
+            if q.get("swap_options", False):
+                text_top = q['option_b'] # 右
+                text_bottom = q['option_a'] # 左
+            else:
+                text_top = q['option_a'] # 左
+                text_bottom = q['option_b'] # 右
 
-        display_options = [f"A: {text_top}", f"B: {text_bottom}"]
-        
-        # ユーザーの回答を取得
-        key_name = f"q_{i}"
-        val = st.radio(
-            f"label_{i}", 
-            display_options, 
-            key=key_name, 
-            index=None,
-            horizontal=True,
-            label_visibility="collapsed"
-        )
-        
-        # 回答を記録
+            display_options = [f"A: {text_top}", f"B: {text_bottom}"]
+            
+            key_name = f"q_{i}"
+            val = st.radio(
+                f"label_{i}", 
+                display_options, 
+                key=key_name, 
+                index=None,
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+            
+            if val:
+                st.session_state.answers[i] = val
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    # 全問回答したら結果ボタンを表示
+    if len(st.session_state.answers) == total_q:
+        if st.button("診断結果を見る", type="primary"):
+            st.session_state.show_result = True
+            st.rerun()
+    else:
+        st.info("全ての質問に回答すると、結果ボタンが表示されます。")
+
+# --- 結果表示モード ---
+else:
+    # スコア計算
+    scores = [0] * len(data["axes"])
+    max_scores = [0] * len(data["axes"])
+    
+    for i, q in enumerate(data["questions"]):
+        val = st.session_state.answers.get(i)
         if val:
-            st.session_state.answers[i] = val
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # スコア計算（回答済みの場合のみ）
-    if val:
-        idx = int(q.get("axis_index", 0))
-        weight = q.get("weight", 1)
-        
-        if val.startswith("A:"):
-            score_delta = val_top_score * weight
-        else:
-            score_delta = -1 * val_top_score * weight
-        
-        if idx < len(scores):
-            scores[idx] += score_delta
-            max_scores[idx] += abs(weight)
-
-# --- 結果表示判定 ---
-if len(st.session_state.answers) == total_q:
-    if st.button("診断結果を見る", type="primary"):
-        # キー生成
-        key = ",".join(["1" if s >= 0 else "-1" for s in scores])
-        # 結果取得
-        res = data["results"].get(key)
-        
-        # 万が一キーが見つからない場合のフォールバック
-        if not res:
-             # 一番近いものを探すか、最初のものを出す
-             res = list(data["results"].values())[0]
-
-        # --- 結果描画 ---
-        meters_html = ""
-        for i, axis in enumerate(data["axes"]):
-            current = scores[i]
-            maximum = max_scores[i] if max_scores[i] > 0 else 1
-            percent = int(((current + maximum) / (2 * maximum)) * 100)
+            idx = int(q.get("axis_index", 0))
+            weight = q.get("weight", 1)
             
-            left_style = "color:#222;" if percent < 50 else "color:#ccc;"
-            right_style = "color:#222;" if percent > 50 else "color:#ccc;"
+            # ロジック再現
+            if q.get("swap_options", False):
+                val_top_score = 1 
+            else:
+                val_top_score = -1
+
+            if val.startswith("A:"):
+                score_delta = val_top_score * weight
+            else:
+                score_delta = -1 * val_top_score * weight
             
-            meters_html += f"""
-            <div class="scale-container">
-                <div class="scale-labels">
-                    <span style="{left_style}">{axis['label_left']}</span>
-                    <span style="{right_style}">{axis['label_right']}</span>
-                </div>
-                <div class="scale-track">
-                    <div class="scale-marker" style="left: {percent}%;"></div>
-                </div>
-            </div>
-            """
+            if idx < len(scores):
+                scores[idx] += score_delta
+                max_scores[idx] += abs(weight)
 
-        tags_html = ' '.join([f'<span class="tag">#{t.replace("#", "")}</span>' for t in res.get('tags', [])])
-        good_match = res.get('good_match', 'ー')
-        bad_match = res.get('bad_match', 'ー')
+    # 結果特定
+    key = ",".join(["1" if s >= 0 else "-1" for s in scores])
+    res = data["results"].get(key)
+    if not res:
+         res = list(data["results"].values())[0]
 
-        raw_html = f"""
-        <div class="result-card">
-            <div class="type-label">DIAGNOSIS RESULT</div>
-            <div class="type-name">{res['name']}</div>
-            <div class="subtitle">{res['subtitle']}</div>
-            <div style="margin-bottom:30px;">{tags_html}</div>
-            {meters_html}
-            <div class="desc-text">{res['desc']}</div>
-            <div class="manual-box">
-                <span class="manual-head">取扱説明書</span>
-                <div style="font-size:0.9em; line-height:1.7; color:#555;">{res['manual']}</div>
+    # 結果描画
+    meters_html = ""
+    for i, axis in enumerate(data["axes"]):
+        current = scores[i]
+        maximum = max_scores[i] if max_scores[i] > 0 else 1
+        percent = int(((current + maximum) / (2 * maximum)) * 100)
+        
+        left_style = "color:#222;" if percent < 50 else "color:#ccc;"
+        right_style = "color:#222;" if percent > 50 else "color:#ccc;"
+        
+        meters_html += f"""
+        <div class="scale-container">
+            <div class="scale-labels">
+                <span style="{left_style}">{axis['label_left']}</span>
+                <span style="{right_style}">{axis['label_right']}</span>
             </div>
-            <div style="margin-top:30px; font-size:0.8em; color:#888; display:flex; gap:30px;">
-                <div>💖 BEST: <b style="color:#555;">{good_match}</b></div>
-                <div>💔 WORST: <b style="color:#555;">{bad_match}</b></div>
+            <div class="scale-track">
+                <div class="scale-marker" style="left: {percent}%;"></div>
             </div>
         </div>
         """
-        st.markdown(raw_html.replace("\n", " "), unsafe_allow_html=True)
-        
-        # 結果表示後は再診断ボタンを出す
-        if st.button("もう一度診断する"):
-            st.session_state.answers = {}
-            st.rerun()
 
-else:
-    st.info("全ての質問に回答すると、結果ボタンが表示されます。")
+    tags_html = ' '.join([f'<span class="tag">#{t.replace("#", "")}</span>' for t in res.get('tags', [])])
+    good_match = res.get('good_match', 'ー')
+    bad_match = res.get('bad_match', 'ー')
+
+    raw_html = f"""
+    <div class="result-card">
+        <div class="type-label">DIAGNOSIS RESULT</div>
+        <div class="type-name">{res['name']}</div>
+        <div class="subtitle">{res['subtitle']}</div>
+        <div style="margin-bottom:30px;">{tags_html}</div>
+        {meters_html}
+        <div class="desc-text">{res['desc']}</div>
+        <div class="manual-box">
+            <span class="manual-head">取扱説明書</span>
+            <div style="font-size:0.9em; line-height:1.7; color:#555;">{res['manual']}</div>
+        </div>
+        <div style="margin-top:30px; font-size:0.8em; color:#888; display:flex; gap:30px;">
+            <div>💖 BEST: <b style="color:#555;">{good_match}</b></div>
+            <div>💔 WORST: <b style="color:#555;">{bad_match}</b></div>
+        </div>
+    </div>
+    """
+    st.markdown(raw_html.replace("\n", " "), unsafe_allow_html=True)
+    
+    # --- 追加機能：他のタイプ図鑑 ---
+    st.markdown("---")
+    st.markdown("### 📚 他のタイプ図鑑")
+    unique_results = {}
+    for k, v in data["results"].items():
+        if v["name"] not in unique_results:
+            unique_results[v["name"]] = v
+    
+    for name, info in unique_results.items():
+        label_text = f"▼ 【{info['name']}】 : {info['subtitle']}"
+        
+        with st.expander(label_text):
+            st.markdown(f"""
+            <div style="padding:10px;">
+                <div style="margin-bottom:10px;">{' '.join([f'<span class="tag">#{t.replace("#", "")}</span>' for t in info.get('tags', [])])}</div>
+                <div class="desc-text" style="margin-top:0;">{info['desc']}</div>
+                <div class="manual-box" style="margin-top:15px;">
+                    <span class="manual-head">取扱説明書</span>
+                    <div style="font-size:0.9em; color:#555;">{info['manual']}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    if st.button("もう一度診断する"):
+        st.session_state.answers = {}
+        st.session_state.show_result = False
+        st.rerun()
